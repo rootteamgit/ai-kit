@@ -1,5 +1,5 @@
 import { inngest } from "../client";
-import { updateJobStatus, setJobError } from "@/lib/job-store";
+import { updateJobStatus, setJobError, setJobSegments } from "@/lib/job-store";
 import {
   getOriginalVideoPath,
   getDigestVideoPath,
@@ -41,6 +41,9 @@ export const processVideo = inngest.createFunction(
         );
 
         await updateJobStatus(jobId, "analyzing", 70);
+
+        // セグメント情報を保存
+        await setJobSegments(jobId, result.segments);
 
         return result.segments;
       });

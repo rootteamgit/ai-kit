@@ -88,6 +88,35 @@ export default function JobPage({ params }: Props) {
 
           <VideoPreview jobId={jobId} />
 
+          {/* 抽出されたセグメント一覧 */}
+          {job.segments && job.segments.length > 0 && (
+            <div className="bg-white rounded-lg shadow p-6">
+              <h3 className="text-lg font-bold text-gray-900 mb-4">
+                抽出されたシーン
+              </h3>
+              <div className="space-y-4">
+                {job.segments.map((segment, index) => (
+                  <div
+                    key={index}
+                    className="border-l-4 border-blue-500 pl-4 py-2"
+                  >
+                    <div className="flex items-center gap-2 mb-1">
+                      <span className="text-sm font-mono bg-gray-100 px-2 py-1 rounded">
+                        {segment.start} - {segment.end}
+                      </span>
+                    </div>
+                    <p className="text-gray-800 font-medium mb-1">
+                      「{segment.quote}」
+                    </p>
+                    <p className="text-sm text-gray-600">
+                      → {segment.reason}
+                    </p>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
           <div className="text-center">
             <Link
               href="/"

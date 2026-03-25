@@ -1,6 +1,6 @@
 import { promises as fs } from "fs";
 import path from "path";
-import type { Job, JobStatus } from "@/types";
+import type { Job, JobStatus, Segment } from "@/types";
 import { STORAGE_PATH, validateJobId } from "./storage";
 
 /**
@@ -86,6 +86,26 @@ export async function setJobError(
   job.status = "failed";
   job.errorMessage = errorMessage;
   job.completedAt = new Date().toISOString();
+
+  const filePath = getJobFilePath(jobId);
+  await fs.writeFile(filePath, JSON.stringify(job, null, 2));
+
+  return job;
+}
+
+/**
+ * ジョブにセグメント情報を保存する
+ */
+export async function setJobSegments(
+  jobId: string,
+  segments: Segment[]
+): Promise<Job | null> {
+  const job = await getJob(jobId);
+  if (!job) {
+    return null;
+  }
+
+  job.segments = segments;
 
   const filePath = getJobFilePath(jobId);
   await fs.writeFile(filePath, JSON.stringify(job, null, 2));

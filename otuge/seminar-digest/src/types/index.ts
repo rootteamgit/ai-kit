@@ -15,6 +15,7 @@ export type Job = {
   errorMessage?: string;
   createdAt: string; // ISO 8601
   completedAt?: string; // ISO 8601
+  segments?: Segment[]; // 抽出されたセグメント
 };
 
 /** パンチライン抽出結果のセグメント */
