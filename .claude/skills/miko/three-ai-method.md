@@ -33,33 +33,12 @@
 ## リポジトリ構造
 
 ```
-├── .claude/
-│   ├── incidents.md            # 障害・失敗の記録
-│   ├── rules/                  # 全AIが読むルール
-│   └── skills/
-│       ├── miko/               # 開発パートナー（御子）
-│       ├── implement/          # 実装AI
-│       ├── explain/            # 説明AI
-│       ├── design-review/      # 設計照合レビューAI
-│       ├── code-review/        # コードレビューAI（品質チェック）
-│       ├── incidents-review/   # 障害棚卸し
-│       └── adversary/          # 反例検出AI
-├── docs/                       # 確定した仕様書のみ
-│   ├── plan/                   # 計画メモ（.plan.md）
-│   └── reference/              # 調査レポート・参考資料
-├── otuge/                      # 実装サイクルの作業場
-│   └── {タスク名}/
-│       ├── design.md
-│       ├── plan.md
-│       ├── explanation.md
-│       └── research.md
-└── CLAUDE.md
+├── .claude/incidents.md        # 障害・失敗の記録
+├── docs/                       # 確定した仕様書（docs/index.md 参照）
+└── otuge/                      # 実装サイクルの作業場
+    └── {タスク名}/
+        ├── design.md
+        ├── plan.md
+        ├── explanation.md
+        └── research.md
 ```
-
-## なぜこれが効くか
-
-- **サブエージェントは毎回クリーン**: forkなので前回の試行錯誤が残らない
-- **説明AIの情報遮断**: 独立コンテキストで起動し、親の会話履歴を引き継がない
-- **設計AIだけが文脈を持つ**: レビュー判断がブレない
-- **要件問題は必ず人間に返る**: サブエージェントが勝手に要件を解釈しない
-- **権限は通常運用**: 対話モードなので全許可不要。チームで共有可能

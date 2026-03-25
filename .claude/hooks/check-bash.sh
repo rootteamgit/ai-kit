@@ -17,7 +17,7 @@ deny() {
 
 # 禁止: cd ... && git ... / git -C ...
 if echo "$COMMAND" | grep -qE '(cd\s+.+&&\s*git\b|git\s+-C\b)'; then
-  deny "禁止パターン検出: cd && git / git -C は使わず、git コマンドを直接実行してください"
+  deny "cd && git / git -C は使わず、git コマンドを直接実行してください"
 fi
 
 exit 0
