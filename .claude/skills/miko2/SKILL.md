@@ -28,7 +28,7 @@ design.md が固まったら開発チームを立ち上げる
 ## 3. 設計レビュー
 
 設計レビューAIを起動する:
-`Agent({ name: "design.review-ai", team_name: "{タスク名}", model: "sonnet", prompt: ".claude/skills/miko2/agents/design.review.md を読んでその指示に従え。task_dir は otuge/{タスク名}" })`
+`Agent({ name: "design.review-ai", team_name: "{タスク名}", model: "sonnet", prompt: ".claude/skills/miko2/agents/design-review.md を読んでその指示に従え。task_dir は otuge/{タスク名}" })`
 
 結果を受け取ったらシャットダウンする:
 `SendMessage({ to: "design.review-ai", message: { type: "shutdown_request" } })`

@@ -15,9 +15,10 @@ deny() {
   exit 0
 }
 
-# 禁止: cd ... && git ... / git -C ...
-if echo "$COMMAND" | grep -qE '(cd\s+.+&&\s*git\b|git\s+-C\b)'; then
-  deny "cd && git / git -C は使わず、git コマンドを直接実行してください"
-fi
+# GIT 操作の禁止は不要。だが、サンプルとして残している
+# # 禁止: cd ... && git ... / git -C ...
+# if echo "$COMMAND" | grep -qE '(cd\s+.+&&\s*git\b|git\s+-C\b)'; then
+#   deny "cd && git / git -C は使わず、git コマンドを直接実行してください"
+# fi
 
 exit 0
