@@ -42,7 +42,7 @@ if ! command -v base64 &>/dev/null; then
 fi
 
 # ----------------------------------------------------------------
-# base64 デコード関数（Linux: -d / macOS: -D 両対応）
+# base64 デコード（GNU: -d / macOS: -D）
 # ----------------------------------------------------------------
 decode_base64() {
   if base64 --version 2>&1 | grep -q GNU; then
@@ -53,44 +53,43 @@ decode_base64() {
 }
 
 # ----------------------------------------------------------------
+# 一時ディレクトリ
+# ----------------------------------------------------------------
+TMPDIR_SYNC=$(mktemp -d)
+trap 'rm -rf "$TMPDIR_SYNC"' EXIT
+
+# ----------------------------------------------------------------
 # リモートファイル一覧取得
 # ----------------------------------------------------------------
 info "ai-kit からファイル一覧を取得中..."
 
-declare -A remote_files  # remote_files[path] = sha
-while IFS=$'\t' read -r fpath fsha; do
-  remote_files["$fpath"]="$fsha"
-done < <(gh api "repos/${OWNER_REPO}/git/trees/${BRANCH}?recursive=1" \
-    --jq '.tree[] | select(.type == "blob") | select(.path | test("^\\.claude/(skills|tools)/")) | [.path, .sha] | @tsv')
+gh api "repos/${OWNER_REPO}/git/trees/${BRANCH}?recursive=1" \
+    --jq '.tree[] | select(.type == "blob") | select(.path | test("^\\.claude/(skills|tools)/")) | [.path, .sha] | @tsv' \
+    > "$TMPDIR_SYNC/remote_files.tsv"
 
 # ----------------------------------------------------------------
-# スキル単位でグルーピング（.claude/skills/{name}/ ごと）
+# スキル名一覧を抽出
 # ----------------------------------------------------------------
-declare -A remote_skills       # remote_skills[skill_name] = "path1\tsha1\npath2\tsha2\n..."
-declare -A remote_tools_files  # remote_tools_files[path] = sha
+# .claude/skills/{name}/... → name を抽出（重複排除）
+grep '^\.claude/skills/' "$TMPDIR_SYNC/remote_files.tsv" | cut -d'/' -f3 | sort -u > "$TMPDIR_SYNC/remote_skills.txt"
 
-for fpath in "${!remote_files[@]}"; do
-  fsha="${remote_files[$fpath]}"
-  if [[ "$fpath" == .claude/skills/* ]]; then
-    # .claude/skills/{name}/... から name を抽出
-    skill_name=$(echo "$fpath" | cut -d'/' -f3)
-    remote_skills["$skill_name"]+="${fpath}"$'\t'"${fsha}"$'\n'
-  elif [[ "$fpath" == .claude/tools/* ]]; then
-    remote_tools_files["$fpath"]="$fsha"
-  fi
-done
-
-# ----------------------------------------------------------------
 # ローカルスキル一覧
-# ----------------------------------------------------------------
-declare -A local_skills  # local_skills[skill_name] = 1
 if [ -d ".claude/skills" ]; then
-  for dir in .claude/skills/*/; do
-    [ -d "$dir" ] || continue
-    skill_name=$(basename "$dir")
-    local_skills["$skill_name"]=1
-  done
+  ls -1 .claude/skills/ 2>/dev/null | while read -r d; do
+    [ -d ".claude/skills/$d" ] && echo "$d"
+  done | sort -u > "$TMPDIR_SYNC/local_skills.txt"
+else
+  touch "$TMPDIR_SYNC/local_skills.txt"
 fi
+
+# ----------------------------------------------------------------
+# ファイル取得関数
+# ----------------------------------------------------------------
+fetch_file() {
+  local fpath="$1" fsha="$2"
+  mkdir -p "$(dirname "./${fpath}")"
+  gh api "repos/${OWNER_REPO}/git/blobs/${fsha}" --jq '.content' | tr -d '\n' | decode_base64 > "./${fpath}"
+}
 
 # ----------------------------------------------------------------
 # スキル同期
@@ -100,69 +99,57 @@ section "skills"
 count_new=0
 count_changed=0
 count_skipped=0
-local_only_skills=()
 
-# リモートにあるスキルを処理
-for skill_name in $(echo "${!remote_skills[@]}" | tr ' ' '\n' | sort); do
-  entries="${remote_skills[$skill_name]}"
+while IFS= read -r skill_name; do
+  # このスキルのリモートファイル一覧
+  grep "^\.claude/skills/${skill_name}/" "$TMPDIR_SYNC/remote_files.tsv" > "$TMPDIR_SYNC/current_skill.tsv"
 
-  if [ -z "${local_skills[$skill_name]+_}" ]; then
-    # 新規スキル
-    warn "[${skill_name}] 新規"
-    if [ -t 0 ]; then
-      read -r -p "  同期しますか? [y/N] " answer
-    else
-      answer="y"
-    fi
-
-    if [[ "$answer" =~ ^[Yy]$ ]]; then
-      while IFS=$'\t' read -r fpath fsha; do
-        [ -z "$fpath" ] && continue
-        mkdir -p "$(dirname "./${fpath}")"
-        gh api "repos/${OWNER_REPO}/git/blobs/${fsha}" --jq '.content' | tr -d '\n' | decode_base64 > "./${fpath}"
-      done <<< "$entries"
-      info "  → コピー完了"
-      ((count_new++)) || true
-    else
-      info "  → スキップ"
-      ((count_skipped++)) || true
-    fi
+  if [ ! -d ".claude/skills/${skill_name}" ]; then
+    # 新規スキル → 質問せずコピー
+    while IFS=$'\t' read -r fpath fsha; do
+      fetch_file "$fpath" "$fsha"
+    done < "$TMPDIR_SYNC/current_skill.tsv"
+    info "[${skill_name}] 新規 → コピー完了"
+    ((count_new++)) || true
   else
     # 既存スキル — 差分チェック
     has_diff=false
-    diff_count=0
 
+    # リモートのファイルをチェック（新規ファイル・変更ファイル）
     while IFS=$'\t' read -r fpath fsha; do
-      [ -z "$fpath" ] && continue
       if [ ! -f "./${fpath}" ]; then
         has_diff=true
-        ((diff_count++)) || true
+        break
       else
         remote_content=$(gh api "repos/${OWNER_REPO}/git/blobs/${fsha}" --jq '.content' | tr -d '\n' | decode_base64)
         local_content=$(cat "./${fpath}")
         if [ "$remote_content" != "$local_content" ]; then
           has_diff=true
-          ((diff_count++)) || true
+          break
         fi
       fi
-    done <<< "$entries"
+    done < "$TMPDIR_SYNC/current_skill.tsv"
+
+    # ローカルにしかないファイル（リモートから削除されたファイル）
+    if ! $has_diff; then
+      while IFS= read -r -d '' local_file; do
+        rel_path="${local_file#./}"
+        if ! grep -q "^${rel_path}"$'\t' "$TMPDIR_SYNC/current_skill.tsv"; then
+          has_diff=true
+          break
+        fi
+      done < <(find "./.claude/skills/${skill_name}" -type f -print0)
+    fi
 
     if $has_diff; then
-      warn "[${skill_name}] 変更あり (${diff_count}ファイル)"
-      if [ -t 0 ]; then
-        read -r -p "  同期しますか? [y/N] " answer
-      else
-        answer="y"
-      fi
+      warn "[${skill_name}] 変更あり"
+      read -r -p "  同期しますか? [y/N] " answer </dev/tty || answer="N"
 
       if [[ "$answer" =~ ^[Yy]$ ]]; then
-        # フォルダ丸ごと置き換え
         rm -rf "./.claude/skills/${skill_name}"
         while IFS=$'\t' read -r fpath fsha; do
-          [ -z "$fpath" ] && continue
-          mkdir -p "$(dirname "./${fpath}")"
-          gh api "repos/${OWNER_REPO}/git/blobs/${fsha}" --jq '.content' | tr -d '\n' | decode_base64 > "./${fpath}"
-        done <<< "$entries"
+          fetch_file "$fpath" "$fsha"
+        done < "$TMPDIR_SYNC/current_skill.tsv"
         info "  → 置き換え完了"
         ((count_changed++)) || true
       else
@@ -173,14 +160,15 @@ for skill_name in $(echo "${!remote_skills[@]}" | tr ' ' '\n' | sort); do
       ((count_skipped++)) || true
     fi
   fi
-done
+done < "$TMPDIR_SYNC/remote_skills.txt"
 
 # ローカル固有スキルの検出
-for skill_name in "${!local_skills[@]}"; do
-  if [ -z "${remote_skills[$skill_name]+_}" ]; then
+local_only_skills=()
+while IFS= read -r skill_name; do
+  if ! grep -q "^${skill_name}$" "$TMPDIR_SYNC/remote_skills.txt"; then
     local_only_skills+=("$skill_name")
   fi
-done
+done < "$TMPDIR_SYNC/local_skills.txt"
 
 # ----------------------------------------------------------------
 # ツール同期（.claude/tools/ 全体で1つ）
@@ -190,11 +178,11 @@ section "tools"
 tools_changed=false
 tools_synced=false
 
-if [ ${#remote_tools_files[@]} -gt 0 ]; then
-  # 差分チェック
+if grep -q '^\.claude/tools/' "$TMPDIR_SYNC/remote_files.tsv"; then
+  grep '^\.claude/tools/' "$TMPDIR_SYNC/remote_files.tsv" > "$TMPDIR_SYNC/remote_tools.tsv"
+
   tools_diff_count=0
-  for fpath in "${!remote_tools_files[@]}"; do
-    fsha="${remote_tools_files[$fpath]}"
+  while IFS=$'\t' read -r fpath fsha; do
     if [ ! -f "./${fpath}" ]; then
       tools_changed=true
       ((tools_diff_count++)) || true
@@ -206,23 +194,17 @@ if [ ${#remote_tools_files[@]} -gt 0 ]; then
         ((tools_diff_count++)) || true
       fi
     fi
-  done
+  done < "$TMPDIR_SYNC/remote_tools.tsv"
 
   if $tools_changed; then
     warn "[tools] 変更あり (${tools_diff_count}ファイル)"
-    if [ -t 0 ]; then
-      read -r -p "  同期しますか? [y/N] " answer
-    else
-      answer="y"
-    fi
+    read -r -p "  同期しますか? [y/N] " answer </dev/tty || answer="N"
 
     if [[ "$answer" =~ ^[Yy]$ ]]; then
       rm -rf ./.claude/tools
-      for fpath in "${!remote_tools_files[@]}"; do
-        fsha="${remote_tools_files[$fpath]}"
-        mkdir -p "$(dirname "./${fpath}")"
-        gh api "repos/${OWNER_REPO}/git/blobs/${fsha}" --jq '.content' | tr -d '\n' | decode_base64 > "./${fpath}"
-      done
+      while IFS=$'\t' read -r fpath fsha; do
+        fetch_file "$fpath" "$fsha"
+      done < "$TMPDIR_SYNC/remote_tools.tsv"
       info "  → 置き換え完了"
       tools_synced=true
     else
@@ -257,3 +239,8 @@ if [ ${#local_only_skills[@]} -gt 0 ]; then
   echo "  ローカル固有: ${#local_only_skills[@]}スキル (${local_names})"
 fi
 echo "========================================"
+
+# --keep が指定されていなければスクリプト自身を削除
+if [[ ! " $* " =~ " --keep " ]]; then
+  rm -f "$0"
+fi
