@@ -15,7 +15,7 @@ gh api repos/rootteamgit/ai-kit/contents/scripts/claude-sync.sh?ref=main --jq '.
 gh api repos/rootteamgit/ai-kit/contents/scripts/claude-sync.sh?ref=main --jq '.content' | base64 -D > claude-sync.sh && bash claude-sync.sh
 
 # Windows
-gh api repos/rootteamgit/ai-kit/contents/scripts/claude-sync.sh?ref=main --jq '.content' | base64 -d > claude-sync.sh; & "C:\Program Files\Git\bin\bash.exe" claude-sync.sh
+& "C:\Program Files\Git\bin\bash.exe" -c "gh api repos/rootteamgit/ai-kit/contents/scripts/claude-sync.sh?ref=main --jq '.content' | base64 -d > claude-sync.sh && bash claude-sync.sh"
 ```
 
 スクリプトは実行後に自動削除される
