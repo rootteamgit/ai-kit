@@ -8,7 +8,6 @@ set -euo pipefail
 
 OWNER_REPO="rootteamgit/ai-kit"
 BRANCH="main"
-TARGET_DIRS=(".claude/skills" ".claude/tools")
 
 # ----------------------------------------------------------------
 # カラー出力
@@ -16,11 +15,13 @@ TARGET_DIRS=(".claude/skills" ".claude/tools")
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+CYAN='\033[0;36m'
+NC='\033[0m'
 
 info()    { echo -e "${GREEN}[INFO]${NC} $*"; }
 warn()    { echo -e "${YELLOW}[WARN]${NC} $*"; }
 error()   { echo -e "${RED}[ERROR]${NC} $*" >&2; }
+section() { echo -e "\n${CYAN}=== $* ===${NC}"; }
 
 # ----------------------------------------------------------------
 # 前提条件チェック
@@ -52,121 +53,207 @@ decode_base64() {
 }
 
 # ----------------------------------------------------------------
-# ファイル一覧取得
+# リモートファイル一覧取得
 # ----------------------------------------------------------------
 info "ai-kit からファイル一覧を取得中..."
 
-# trees API でフラットなファイルリストを取得し、対象ディレクトリのみ抽出（path と sha を tab 区切り）
-REMOTE_FILES=()
+declare -A remote_files  # remote_files[path] = sha
 while IFS=$'\t' read -r fpath fsha; do
-  REMOTE_FILES+=("${fpath}"$'\t'"${fsha}")
+  remote_files["$fpath"]="$fsha"
 done < <(gh api "repos/${OWNER_REPO}/git/trees/${BRANCH}?recursive=1" \
     --jq '.tree[] | select(.type == "blob") | select(.path | test("^\\.claude/(skills|tools)/")) | [.path, .sha] | @tsv')
 
 # ----------------------------------------------------------------
-# カウンタ
+# スキル単位でグルーピング（.claude/skills/{name}/ ごと）
 # ----------------------------------------------------------------
-count_copied=0
-count_overwritten=0
-count_skipped=0
-local_only=()
+declare -A remote_skills       # remote_skills[skill_name] = "path1\tsha1\npath2\tsha2\n..."
+declare -A remote_tools_files  # remote_tools_files[path] = sha
 
-# ----------------------------------------------------------------
-# リモートファイルの集合（ローカル固有ファイル判定用）
-# ----------------------------------------------------------------
-declare -A remote_path_set
-for entry in "${REMOTE_FILES[@]}"; do
-  fpath="${entry%%$'\t'*}"
-  remote_path_set["$fpath"]=1
+for fpath in "${!remote_files[@]}"; do
+  fsha="${remote_files[$fpath]}"
+  if [[ "$fpath" == .claude/skills/* ]]; then
+    # .claude/skills/{name}/... から name を抽出
+    skill_name=$(echo "$fpath" | cut -d'/' -f3)
+    remote_skills["$skill_name"]+="${fpath}"$'\t'"${fsha}"$'\n'
+  elif [[ "$fpath" == .claude/tools/* ]]; then
+    remote_tools_files["$fpath"]="$fsha"
+  fi
 done
 
 # ----------------------------------------------------------------
-# 各リモートファイルを処理
+# ローカルスキル一覧
 # ----------------------------------------------------------------
-for entry in "${REMOTE_FILES[@]}"; do
-  fpath="${entry%%$'\t'*}"
-  fsha="${entry##*$'\t'}"
+declare -A local_skills  # local_skills[skill_name] = 1
+if [ -d ".claude/skills" ]; then
+  for dir in .claude/skills/*/; do
+    [ -d "$dir" ] || continue
+    skill_name=$(basename "$dir")
+    local_skills["$skill_name"]=1
+  done
+fi
 
-  local_path="./${fpath}"
-  parent_dir="$(dirname "$local_path")"
+# ----------------------------------------------------------------
+# スキル同期
+# ----------------------------------------------------------------
+section "skills"
 
-  # ファイル内容を取得（base64）
-  remote_content_b64=$(gh api "repos/${OWNER_REPO}/git/blobs/${fsha}" --jq '.content' | tr -d '\n')
+count_new=0
+count_changed=0
+count_skipped=0
+local_only_skills=()
 
-  if [ ! -f "$local_path" ]; then
-    # ローカルに存在しない → コピー
-    mkdir -p "$parent_dir"
-    echo "$remote_content_b64" | decode_base64 > "$local_path"
-    info "コピー: $fpath"
-    ((count_copied++)) || true
-  else
-    # ローカルに存在する → 差分チェック
-    local_content_b64=$(base64 < "$local_path" | tr -d '\n')
+# リモートにあるスキルを処理
+for skill_name in $(echo "${!remote_skills[@]}" | tr ' ' '\n' | sort); do
+  entries="${remote_skills[$skill_name]}"
 
-    # base64 が完全一致しない場合のみ差分ありとみなす
-    # (改行コードの違いを吸収するため内容を直接比較)
-    remote_decoded=$(echo "$remote_content_b64" | decode_base64)
-    local_decoded=$(cat "$local_path")
-
-    if [ "$remote_decoded" = "$local_decoded" ]; then
-      # 差分なし → スキップ（メッセージなし）
-      ((count_skipped++)) || true
+  if [ -z "${local_skills[$skill_name]+_}" ]; then
+    # 新規スキル
+    warn "[${skill_name}] 新規"
+    if [ -t 0 ]; then
+      read -r -p "  同期しますか? [y/N] " answer
     else
-      # 差分あり → ユーザーに確認
-      warn "差分あり: $fpath"
-      echo "  ローカルと ai-kit の内容が異なります。"
-      if [ -t 0 ]; then
-        read -r -p "  上書きしますか? [y/N] " answer
+      answer="y"
+    fi
+
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+      while IFS=$'\t' read -r fpath fsha; do
+        [ -z "$fpath" ] && continue
+        mkdir -p "$(dirname "./${fpath}")"
+        gh api "repos/${OWNER_REPO}/git/blobs/${fsha}" --jq '.content' | tr -d '\n' | decode_base64 > "./${fpath}"
+      done <<< "$entries"
+      info "  → コピー完了"
+      ((count_new++)) || true
+    else
+      info "  → スキップ"
+      ((count_skipped++)) || true
+    fi
+  else
+    # 既存スキル — 差分チェック
+    has_diff=false
+    diff_count=0
+
+    while IFS=$'\t' read -r fpath fsha; do
+      [ -z "$fpath" ] && continue
+      if [ ! -f "./${fpath}" ]; then
+        has_diff=true
+        ((diff_count++)) || true
       else
-        answer="N"
-        warn "  TTY なし。スキップします。"
+        remote_content=$(gh api "repos/${OWNER_REPO}/git/blobs/${fsha}" --jq '.content' | tr -d '\n' | decode_base64)
+        local_content=$(cat "./${fpath}")
+        if [ "$remote_content" != "$local_content" ]; then
+          has_diff=true
+          ((diff_count++)) || true
+        fi
+      fi
+    done <<< "$entries"
+
+    if $has_diff; then
+      warn "[${skill_name}] 変更あり (${diff_count}ファイル)"
+      if [ -t 0 ]; then
+        read -r -p "  同期しますか? [y/N] " answer
+      else
+        answer="y"
       fi
 
       if [[ "$answer" =~ ^[Yy]$ ]]; then
-        mkdir -p "$parent_dir"
-        echo "$remote_content_b64" | decode_base64 > "$local_path"
-        info "上書き: $fpath"
-        ((count_overwritten++)) || true
+        # フォルダ丸ごと置き換え
+        rm -rf "./.claude/skills/${skill_name}"
+        while IFS=$'\t' read -r fpath fsha; do
+          [ -z "$fpath" ] && continue
+          mkdir -p "$(dirname "./${fpath}")"
+          gh api "repos/${OWNER_REPO}/git/blobs/${fsha}" --jq '.content' | tr -d '\n' | decode_base64 > "./${fpath}"
+        done <<< "$entries"
+        info "  → 置き換え完了"
+        ((count_changed++)) || true
       else
-        info "スキップ: $fpath"
+        info "  → スキップ"
         ((count_skipped++)) || true
       fi
+    else
+      ((count_skipped++)) || true
     fi
   fi
 done
 
-# ----------------------------------------------------------------
-# ローカル固有ファイルの検出
-# ----------------------------------------------------------------
-for target_dir in "${TARGET_DIRS[@]}"; do
-  if [ -d "./${target_dir}" ]; then
-    while IFS= read -r -d '' local_file; do
-      # "./" プレフィックスを除去して相対パスにする
-      rel_path="${local_file#./}"
-      if [ -z "${remote_path_set[$rel_path]+_}" ]; then
-        local_only+=("$rel_path")
-      fi
-    done < <(find "./${target_dir}" -type f -print0)
+# ローカル固有スキルの検出
+for skill_name in "${!local_skills[@]}"; do
+  if [ -z "${remote_skills[$skill_name]+_}" ]; then
+    local_only_skills+=("$skill_name")
   fi
 done
 
 # ----------------------------------------------------------------
-# サマリー表示
+# ツール同期（.claude/tools/ 全体で1つ）
+# ----------------------------------------------------------------
+section "tools"
+
+tools_changed=false
+tools_synced=false
+
+if [ ${#remote_tools_files[@]} -gt 0 ]; then
+  # 差分チェック
+  tools_diff_count=0
+  for fpath in "${!remote_tools_files[@]}"; do
+    fsha="${remote_tools_files[$fpath]}"
+    if [ ! -f "./${fpath}" ]; then
+      tools_changed=true
+      ((tools_diff_count++)) || true
+    else
+      remote_content=$(gh api "repos/${OWNER_REPO}/git/blobs/${fsha}" --jq '.content' | tr -d '\n' | decode_base64)
+      local_content=$(cat "./${fpath}")
+      if [ "$remote_content" != "$local_content" ]; then
+        tools_changed=true
+        ((tools_diff_count++)) || true
+      fi
+    fi
+  done
+
+  if $tools_changed; then
+    warn "[tools] 変更あり (${tools_diff_count}ファイル)"
+    if [ -t 0 ]; then
+      read -r -p "  同期しますか? [y/N] " answer
+    else
+      answer="y"
+    fi
+
+    if [[ "$answer" =~ ^[Yy]$ ]]; then
+      rm -rf ./.claude/tools
+      for fpath in "${!remote_tools_files[@]}"; do
+        fsha="${remote_tools_files[$fpath]}"
+        mkdir -p "$(dirname "./${fpath}")"
+        gh api "repos/${OWNER_REPO}/git/blobs/${fsha}" --jq '.content' | tr -d '\n' | decode_base64 > "./${fpath}"
+      done
+      info "  → 置き換え完了"
+      tools_synced=true
+    else
+      info "  → スキップ"
+    fi
+  else
+    info "変更なし"
+  fi
+else
+  info "リモートにツールなし"
+fi
+
+# ----------------------------------------------------------------
+# サマリー
 # ----------------------------------------------------------------
 echo ""
 echo "========================================"
 echo " 同期完了"
 echo "========================================"
-echo "  コピー       : ${count_copied} ファイル"
-echo "  上書き       : ${count_overwritten} ファイル"
-echo "  スキップ     : ${count_skipped} ファイル"
-echo "  ローカル固有 : ${#local_only[@]} ファイル"
-
-if [ ${#local_only[@]} -gt 0 ]; then
-  echo ""
-  warn "以下のファイルは ai-kit に存在しません (ローカル固有):"
-  for f in "${local_only[@]}"; do
-    echo "  - $f"
-  done
+echo "  skills - 新規: ${count_new}  変更: ${count_changed}  スキップ: ${count_skipped}"
+if $tools_changed; then
+  if $tools_synced; then
+    echo "  tools  - 変更あり (同期済み)"
+  else
+    echo "  tools  - 変更あり (スキップ)"
+  fi
+else
+  echo "  tools  - 変更なし"
+fi
+if [ ${#local_only_skills[@]} -gt 0 ]; then
+  local_names=$(IFS=', '; echo "${local_only_skills[*]}")
+  echo "  ローカル固有: ${#local_only_skills[@]}スキル (${local_names})"
 fi
 echo "========================================"
