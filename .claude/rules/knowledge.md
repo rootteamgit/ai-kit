@@ -40,7 +40,7 @@
 node .claude/tools/knowledge.mjs add knowledge/domain.jsonl -key "session-method" -insight "JWT ではなくサーバーサイドセッションを採用" -source "user-stated" -tags "auth,session" -refs "src/auth/session.ts"
 
 # 読み取り
-# デフォルト上限10件  -tags: 完全一致優先、部分一致も含む  -refs: ファイルパスでフィルタ  -limit 0: 無制限（デフォルト10件）
+# デフォルト上限30件  -tags: 完全一致優先、部分一致も含む  -refs: ファイルパスでフィルタ  -limit 0: 無制限
 node .claude/tools/knowledge.mjs read knowledge/domain.jsonl -tags "auth"
 
 # 削除

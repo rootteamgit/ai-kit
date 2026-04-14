@@ -104,7 +104,7 @@ function cmdRead(args) {
   const filterTags = tagsRaw ? tagsRaw.split(',').map(t => t.trim()) : null
 
   const limitRaw = getFlag(args, '-limit')
-  const limit = limitRaw != null ? Number(limitRaw) : 10
+  const limit = limitRaw != null ? Number(limitRaw) : 30
 
   const sourcePriority = { 'user-stated': 0, 'observed': 1, 'inferred': 2 }
 
