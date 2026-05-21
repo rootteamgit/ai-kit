@@ -16,9 +16,7 @@ export function resolveDate(str) {
     const result = format.replace(tokenPattern, (m) => tokens[m])
     const remaining = result.match(/[A-Za-z]+/)
     if (remaining) {
-      console.error(
-        `Unknown date token: "${remaining[0]}" in "{date:${format}}"`
-      )
+      console.error(`Unknown date token: "${remaining[0]}" in "{date:${format}}"`)
       process.exit(1)
     }
     return result
@@ -34,9 +32,7 @@ export function getFlag(args, name) {
 
 // ファイルを読む（存在しなければ空文字）
 export function readFileOr(filePath, fallback = '') {
-  return existsSync(filePath)
-    ? readFileSync(filePath, 'utf-8').replace(/\r/g, '')
-    : fallback
+  return existsSync(filePath) ? readFileSync(filePath, 'utf-8').replace(/\r/g, '') : fallback
 }
 
 // 既存内容の末尾に空行を保証するための prefix を返す
